@@ -77,6 +77,14 @@ struct DragState {
     moved: bool,
 }
 
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PointerPosition {
+    gaze_x: f64,
+    gaze_y: f64,
+    near: bool,
+}
+
 #[derive(Clone, Copy, Deserialize, Serialize)]
 struct SavedPosition {
     x: i32,
@@ -103,6 +111,7 @@ struct RuntimeSettings {
     pause_animations: bool,
     do_not_disturb: bool,
     current_mode: usize,
+    widget_size: u32,
 }
 
 impl Default for RuntimeSettings {
@@ -112,6 +121,7 @@ impl Default for RuntimeSettings {
             pause_animations: false,
             do_not_disturb: false,
             current_mode: 0,
+            widget_size: 320,
         }
     }
 }
@@ -302,6 +312,68 @@ fn save_current_mode(mode: usize, settings: tauri::State<'_, SettingsStore>) -> 
         .lock()
         .map_err(|_| "Runtime settings are unavailable".to_string())? = updated;
     Ok(())
+}
+
+#[tauri::command]
+fn set_widget_size(
+    size: u32,
+    window: WebviewWindow,
+    settings: tauri::State<'_, SettingsStore>,
+) -> Result<(), String> {
+    if ![280, 320, 360, 400].contains(&size) {
+        return Err("Widget size must be one of 280, 320, 360, or 400".into());
+    }
+    let previous = settings
+        .data
+        .lock()
+        .map_err(|_| "Runtime settings are unavailable".to_string())?
+        .clone();
+    if size == previous.widget_size {
+        return Ok(());
+    }
+
+    let previous_position = window
+        .outer_position()
+        .map_err(|error| format!("Could not read the RIATA widget position: {error}"))?;
+    window
+        .set_size(tauri::LogicalSize::new(size as f64, size as f64))
+        .map_err(|error| format!("Could not resize the RIATA widget: {error}"))?;
+    if let Err(error) = clamp_window_to_monitor(&window) {
+        return match restore_widget_geometry(&window, previous.widget_size, previous_position) {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(format!("{error}; {rollback_error}")),
+        };
+    }
+
+    let mut updated = previous.clone();
+    updated.widget_size = size;
+    if let Err(error) = write_settings(&settings.path, &updated) {
+        let rollback = restore_widget_geometry(&window, previous.widget_size, previous_position);
+        return match rollback {
+            Ok(()) => Err(format!("Could not save widget size: {error}")),
+            Err(rollback_error) => Err(format!(
+                "Could not save widget size: {error}; {rollback_error}"
+            )),
+        };
+    }
+    *settings
+        .data
+        .lock()
+        .map_err(|_| "Runtime settings are unavailable".to_string())? = updated;
+    Ok(())
+}
+
+fn restore_widget_geometry(
+    window: &WebviewWindow,
+    size: u32,
+    position: PhysicalPosition<i32>,
+) -> Result<(), String> {
+    window
+        .set_size(tauri::LogicalSize::new(size as f64, size as f64))
+        .map_err(|error| format!("Could not restore the previous widget size: {error}"))?;
+    window
+        .set_position(position)
+        .map_err(|error| format!("Could not restore the previous widget position: {error}"))
 }
 
 fn write_settings(path: &PathBuf, settings: &RuntimeSettings) -> Result<(), String> {
@@ -583,6 +655,7 @@ fn start_native_loops(
         let mut last_ignore = None;
         let mut last_fullscreen = None;
         let mut last_pointer_target = None;
+        let mut last_pointer_near = false;
         let mut last_quiet_state = None;
         let mut last_activity_check = Instant::now() - Duration::from_secs(1);
         let mut last_watchdog_check = Instant::now();
@@ -676,6 +749,19 @@ fn start_native_loops(
                         eprintln!("Disk: could not publish pointer target state: {error}");
                     }
                 }
+                if last_pointer_near {
+                    last_pointer_near = false;
+                    if let Err(error) = window.emit(
+                        "pointer-position",
+                        PointerPosition {
+                            gaze_x: 0.0,
+                            gaze_y: 0.0,
+                            near: false,
+                        },
+                    ) {
+                        eprintln!("Disk: could not reset pointer gaze: {error}");
+                    }
+                }
                 thread::sleep(Duration::from_millis(200));
                 continue;
             }
@@ -719,6 +805,41 @@ fn start_native_loops(
                 dx >= 0 && dy >= 0 && dx < size.width as i32 && dy < size.height as i32;
             let logical_x = dx as f64 / scale;
             let logical_y = dy as f64 / scale;
+            let logical_width = size.width as f64 / scale;
+            let logical_height = size.height as f64 / scale;
+            let widget_scale = logical_width / 320.0;
+            let gaze_x = ((logical_x / widget_scale - 160.0) / 48.0).clamp(-1.0, 1.0);
+            let gaze_y = ((logical_y / widget_scale - 160.0) / 48.0).clamp(-1.0, 1.0);
+            let distance_from_center = ((logical_x - logical_width / 2.0).powi(2)
+                + (logical_y - logical_height / 2.0).powi(2))
+            .sqrt();
+            let tracking_pointer = distance_from_center <= 150.0 * widget_scale;
+            let pointer_near = distance_from_center <= 116.0 * widget_scale;
+            if tracking_pointer {
+                last_pointer_near = true;
+                if let Err(error) = window.emit(
+                    "pointer-position",
+                    PointerPosition {
+                        gaze_x,
+                        gaze_y,
+                        near: pointer_near,
+                    },
+                ) {
+                    eprintln!("Disk: could not publish pointer gaze: {error}");
+                }
+            } else if last_pointer_near {
+                last_pointer_near = false;
+                if let Err(error) = window.emit(
+                    "pointer-position",
+                    PointerPosition {
+                        gaze_x: 0.0,
+                        gaze_y: 0.0,
+                        near: false,
+                    },
+                ) {
+                    eprintln!("Disk: could not reset pointer gaze: {error}");
+                }
+            }
             let hit = match regions.0.lock() {
                 Ok(regions) => regions
                     .iter()
@@ -783,7 +904,7 @@ fn start_native_loops(
 
             thread::sleep(if fullscreen {
                 Duration::from_secs(1)
-            } else if inside_window || drag_active {
+            } else if inside_window || drag_active || tracking_pointer {
                 Duration::from_millis(33)
             } else {
                 Duration::from_millis(200)
@@ -804,7 +925,7 @@ fn open_settings(app: &AppHandle) -> Result<(), String> {
     }
 
     WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
-        .title("Disk Settings")
+        .title("RIATA Settings")
         .inner_size(660.0, 480.0)
         .resizable(true)
         .build()
@@ -882,7 +1003,7 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     TrayIconBuilder::new()
         .icon(icon)
-        .tooltip("Disk")
+        .tooltip("RIATA")
         .menu(&menu)
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "show-hide" => {
@@ -1050,6 +1171,9 @@ pub fn run() {
             } else {
                 RuntimeSettings::default()
             };
+            if ![280, 320, 360, 400].contains(&settings.widget_size) {
+                settings.widget_size = 320;
+            }
             settings.global_hotkey = Shortcut::from_str(&settings.global_hotkey)
                 .map_err(|error| format!("Invalid configured global shortcut: {error}"))?
                 .to_string();
@@ -1062,6 +1186,16 @@ pub fn run() {
             let window = app.get_webview_window("main").ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "Missing main window")
             })?;
+            let widget_size = app
+                .state::<SettingsStore>()
+                .data
+                .lock()
+                .map_err(|_| "Runtime settings are unavailable")?
+                .widget_size;
+            window.set_size(tauri::LogicalSize::new(
+                widget_size as f64,
+                widget_size as f64,
+            ))?;
             if let Err(error) = restore_position(&window, app.state::<PositionStore>().inner()) {
                 eprintln!("Disk: {error}");
             }
@@ -1108,7 +1242,8 @@ pub fn run() {
             watchdog_ping,
             set_global_hotkey,
             set_pause_animations,
-            save_current_mode
+            save_current_mode,
+            set_widget_size
         ])
         .run(tauri::generate_context!())
         .expect("error while running Disk");

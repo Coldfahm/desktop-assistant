@@ -18,33 +18,40 @@ body {
 .settings {
   max-width: 620px;
   margin: 0 auto;
-  padding: 48px 42px;
+  padding: 36px 42px;
 }
 
-h1 {
-  margin: 0 0 14px;
+.settings h1 {
+  margin: 0 0 10px;
   font-size: 24px;
   font-weight: 600;
 }
 
-p {
+.settings > p {
   max-width: 500px;
   color: #536462;
   font-size: 14px;
   line-height: 1.65;
 }
 
-.settings-form {
+.settings-section {
   display: grid;
-  gap: 12px;
+  gap: 11px;
   margin-top: 28px;
 }
 
-.settings-form label {
+.settings-section h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.settings-section label {
   font-size: 13px;
   font-weight: 600;
 }
 
+.settings-section select,
 .settings-form input {
   width: 100%;
   padding: 11px 12px;
@@ -55,19 +62,29 @@ p {
   font: inherit;
 }
 
+.settings-section select:focus-visible,
 .settings-form input:focus-visible,
 .settings-form button:focus-visible {
   outline: 2px solid #4d8e83;
   outline-offset: 2px;
 }
 
+.settings-section p,
 .settings-form .settings-hint,
-.settings-form .settings-error {
+.settings-error {
   margin: 0;
+  color: #536462;
   font-size: 12px;
+  line-height: 1.6;
 }
 
-.settings-form .settings-error {
+.settings-form {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-form .settings-error,
+.settings-error {
   color: #a42f2f;
 }
 
@@ -81,7 +98,8 @@ p {
   cursor: pointer;
 }
 
-.settings-form button:disabled {
+.settings-form button:disabled,
+.settings-section select:disabled {
   cursor: wait;
   opacity: 0.6;
 }

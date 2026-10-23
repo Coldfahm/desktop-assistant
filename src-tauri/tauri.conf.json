@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Disk",
+  "productName": "RIATA",
   "version": "0.1.0",
   "identifier": "com.disk.assistant",
   "build": {
@@ -13,9 +13,9 @@
     "windows": [
       {
         "label": "main",
-        "title": "Disk",
-        "width": 560,
-        "height": 560,
+        "title": "RIATA",
+        "width": 320,
+        "height": 320,
         "resizable": false,
         "decorations": false,
         "transparent": true,

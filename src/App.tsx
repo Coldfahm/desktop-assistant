@@ -4,10 +4,11 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type WheelEvent,
 } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
   Activity,
@@ -19,6 +20,7 @@ import {
 } from "lucide-react";
 import "./App.css";
 
+const WIDGET_SIZE = 320;
 const MODES = [
   { name: "Launcher", Icon: PanelsTopLeft },
   { name: "Media", Icon: AudioLines },
@@ -33,38 +35,46 @@ type HitRegion =
   | { shape: "rect"; x: number; y: number; width: number; height: number };
 
 type RuntimeSettings = {
-  currentMode: number;
-  pauseAnimations: boolean;
+  current_mode: number;
+  pause_animations: boolean;
+  widget_size: number;
 };
 
-function Character() {
-  return (
-    <svg
-      className="character"
-      viewBox="0 0 120 110"
-      role="img"
-      aria-label="Placeholder cat"
-    >
-      <path
-        className="cat-fur"
-        d="M22 44 19 12l25 16a54 54 0 0 1 32 0l25-16-3 34c8 9 12 19 12 30 0 23-22 33-50 33S10 97 10 74c0-11 4-21 12-30Z"
-      />
-      <path className="cat-ear" d="m29 26 14 9-12 4Zm62 0-14 9 12 4Z" />
-      <path className="cat-eye" d="M39 64a4 5 0 1 0 0 .1Zm42 0a4 5 0 1 0 0 .1Z" />
-      <path className="cat-face" d="M55 76q5-5 10 0l-5 5Zm5 5q-5 8-11 1m11-1q5 8 11 1" />
-      <path className="cat-whisker" d="m31 76-16-3m17 9-16 2m69-8 16-3m-17 9 16 2" />
-    </svg>
-  );
-}
+type PointerPosition = {
+  gazeX: number;
+  gazeY: number;
+  near: boolean;
+};
+
+const PARTICLES = Array.from({ length: 260 }, (_, index) => {
+  const angle = index * 137.508;
+  const radians = (angle * Math.PI) / 180;
+  const normalized = ((index * 0.61803398875) % 1);
+  const radius = 86 + normalized * 61;
+  const spread = ((index * 17) % 7) - 3;
+  return {
+    left: WIDGET_SIZE / 2 + Math.cos(radians) * (radius + spread),
+    top: WIDGET_SIZE / 2 + Math.sin(radians) * (radius + spread),
+    hue: (angle + 30) % 360,
+    size: 2 + ((index * 13) % 5),
+    opacity: 0.45 + ((index * 7) % 50) / 100,
+  };
+});
 
 function App() {
   const [mode, setMode] = useState(0);
   const [awake, setAwake] = useState(false);
-  const [labelVisible, setLabelVisible] = useState(true);
+  const [labelVisible, setLabelVisible] = useState(false);
   const [visible, setVisible] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
   const [pauseAnimations, setPauseAnimations] = useState(false);
   const [focusAssist, setFocusAssist] = useState(false);
+  const [widgetSize, setWidgetSize] = useState(WIDGET_SIZE);
+  const [gaze, setGaze] = useState<PointerPosition>({
+    gazeX: 0,
+    gazeY: 0,
+    near: false,
+  });
   const [pulse, setPulse] = useState(0);
   const rootRef = useRef<HTMLElement | null>(null);
   const visibleRef = useRef(visible);
@@ -121,7 +131,7 @@ function App() {
       showModeLabel();
       void invoke("save_current_mode", { mode: normalized }).catch(
         (error: unknown) => {
-          console.error("Could not save Disk mode:", error);
+          console.error("Could not save RIATA mode:", error);
         },
       );
     },
@@ -149,28 +159,27 @@ function App() {
     observer.observe(root);
     void refreshHitRegions();
     return () => observer.disconnect();
-  }, [awake, refreshHitRegions, visible]);
+  }, [awake, refreshHitRegions, visible, widgetSize]);
 
   useEffect(() => {
     let cancelled = false;
     void invoke<RuntimeSettings>("get_runtime_settings")
       .then((settings) => {
         if (cancelled) return;
-        const initialMode = settings.currentMode % MODES.length;
+        const initialMode = settings.current_mode % MODES.length;
         modeRef.current = initialMode;
         setMode(initialMode);
-        setPauseAnimations(settings.pauseAnimations);
+        setPauseAnimations(settings.pause_animations);
+        setWidgetSize(settings.widget_size);
       })
       .catch((error: unknown) => {
-        console.error("Could not load Disk settings:", error);
+        console.error("Could not load RIATA settings:", error);
       });
     void invoke<boolean>("get_focus_assist_state")
       .then((active) => {
-        if (!cancelled) {
-          focusAssistRef.current = active;
-          setFocusAssist(active);
-          if (active) setLabelVisible(false);
-        }
+        if (cancelled) return;
+        focusAssistRef.current = active;
+        setFocusAssist(active);
       })
       .catch((error: unknown) => {
         console.error("Could not read Windows notification state:", error);
@@ -200,6 +209,7 @@ function App() {
     let unlistenVisibility: (() => void) | undefined;
     let unlistenFullscreen: (() => void) | undefined;
     let unlistenPointer: (() => void) | undefined;
+    let unlistenPointerPosition: (() => void) | undefined;
     let unlistenCycle: (() => void) | undefined;
     let unlistenPause: (() => void) | undefined;
     let unlistenFocusAssist: (() => void) | undefined;
@@ -210,10 +220,9 @@ function App() {
       if (!event.payload) {
         setAwake(false);
         setLabelVisible(false);
+        setGaze({ gazeX: 0, gazeY: 0, near: false });
         window.clearTimeout(labelTimer.current);
         window.clearTimeout(awakeTimer.current);
-      } else {
-        setLabelVisible(true);
       }
     }).then((unlisten) => {
       if (cancelled) unlisten();
@@ -257,6 +266,12 @@ function App() {
       if (cancelled) unlisten();
       else unlistenPointer = unlisten;
     });
+    void listen<PointerPosition>("pointer-position", (event) => {
+      setGaze(event.payload);
+    }).then((unlisten) => {
+      if (cancelled) unlisten();
+      else unlistenPointerPosition = unlisten;
+    });
     void listen<number>("cycle-mode", (event) => changeMode(event.payload)).then(
       (unlisten) => {
         if (cancelled) unlisten();
@@ -268,6 +283,7 @@ function App() {
       unlistenVisibility?.();
       unlistenFullscreen?.();
       unlistenPointer?.();
+      unlistenPointerPosition?.();
       unlistenCycle?.();
       unlistenPause?.();
       unlistenFocusAssist?.();
@@ -280,18 +296,18 @@ function App() {
       return;
     }
     if (labelVisible) {
-      labelTimer.current = window.setTimeout(() => setLabelVisible(false), 800);
+      labelTimer.current = window.setTimeout(() => setLabelVisible(false), 1000);
     }
     return () => window.clearTimeout(labelTimer.current);
   }, [fullscreen, labelVisible, mode, visible]);
 
-  const onDiskPointerDown = () => {
+  const onOrbPointerDown = () => {
     void invoke("begin_disk_drag").catch((error: unknown) => {
-      console.error("Could not begin disk drag:", error);
+      console.error("Could not begin RIATA drag:", error);
     });
   };
 
-  const onDiskWheel = (event: WheelEvent<HTMLButtonElement>) => {
+  const onOrbWheel = (event: WheelEvent<HTMLButtonElement>) => {
     event.preventDefault();
     if (wheelLock.current || event.deltaY === 0) return;
     wheelLock.current = true;
@@ -303,6 +319,8 @@ function App() {
 
   const { Icon: CurrentModeIcon } = MODES[mode];
   const animationsFrozen = fullscreen || pauseAnimations;
+  const scale = widgetSize / WIDGET_SIZE;
+  const rootStyle = { "--widget-scale": scale } as CSSProperties;
 
   if (!visible) return null;
 
@@ -310,20 +328,38 @@ function App() {
     <main
       className={`widget${animationsFrozen ? " is-frozen" : ""}${focusAssist ? " is-quiet" : ""}`}
       ref={rootRef}
-      aria-label="Disk floating assistant"
+      style={rootStyle}
+      aria-label="RIATA floating assistant"
     >
-      <div className="orbit" aria-hidden="true" />
+      <div className="particle-halo" aria-hidden="true">
+        {PARTICLES.map((particle, index) => (
+          <span
+            className="particle"
+            key={index}
+            style={
+              {
+                left: particle.left,
+                top: particle.top,
+                "--particle-hue": particle.hue,
+                "--particle-size": particle.size,
+                "--particle-opacity": particle.opacity,
+              } as CSSProperties
+            }
+          />
+        ))}
+      </div>
+
       <AnimatePresence>
         {awake &&
           MODES.map(({ name, Icon }, index) => {
             const angle = (index / MODES.length) * Math.PI * 2 - Math.PI / 2;
-            const x = 280 + Math.cos(angle) * 190;
-            const y = 280 + Math.sin(angle) * 190;
+            const x = WIDGET_SIZE / 2 + Math.cos(angle) * 128;
+            const y = WIDGET_SIZE / 2 + Math.sin(angle) * 128;
             const isCurrent = index === mode;
 
             return (
               <motion.div
-                className="ring-anchor"
+                className="mode-anchor"
                 data-hit-region="rect"
                 key={name}
                 style={{ left: x, top: y }}
@@ -337,7 +373,7 @@ function App() {
                 }
               >
                 <motion.button
-                  className={`ring-item${isCurrent ? " is-current" : ""}`}
+                  className={`mode-button${isCurrent ? " is-current" : ""}`}
                   type="button"
                   aria-label={`${name} mode`}
                   title={name}
@@ -349,11 +385,9 @@ function App() {
                       ? { duration: 0 }
                       : { type: "spring", stiffness: 260, damping: 22, mass: 0.9 }
                   }
-                  onClick={() => {
-                    commitMode(index);
-                  }}
+                  onClick={() => commitMode(index)}
                 >
-                  <Icon size={18} strokeWidth={1.6} />
+                  <Icon size={16} strokeWidth={1.8} />
                 </motion.button>
               </motion.div>
             );
@@ -361,12 +395,12 @@ function App() {
       </AnimatePresence>
 
       <motion.button
-        className="disk"
+        className="orb"
         data-hit-region="circle"
         type="button"
-        aria-label={`Disk assistant. Current mode: ${MODES[mode].name}`}
-        onPointerDown={onDiskPointerDown}
-        onWheel={onDiskWheel}
+        aria-label={`RIATA assistant. Current mode: ${MODES[mode].name}`}
+        onPointerDown={onOrbPointerDown}
+        onWheel={onOrbWheel}
         animate={{
           scale: pulse > 0 && !animationsFrozen && !reducedMotion ? [1, 1.045, 1] : 1,
         }}
@@ -376,31 +410,52 @@ function App() {
             : { type: "spring", stiffness: 260, damping: 22, mass: 0.9, duration: 0.12 }
         }
       >
-        <span className={`disk-light${awake ? " is-awake" : ""}`} />
-        <span className={`character-wrap${awake ? " is-awake" : ""}`}>
-          <Character />
-        </span>
-        <span className="disk-caption">
-          <CurrentModeIcon size={13} strokeWidth={1.7} />
-          <span>{MODES[mode].name}</span>
+        <span className={`orb-core${awake ? " is-awake" : ""}`}>
+          <svg
+            className={`orb-face${gaze.near ? " is-smiling" : ""}`}
+            viewBox="0 0 58 42"
+            aria-hidden="true"
+          >
+            <ellipse className="eye-white" cx="17" cy="12" rx="8" ry="10" />
+            <ellipse className="eye-white" cx="41" cy="12" rx="8" ry="10" />
+            <circle
+              className="eye-pupil"
+              cx="17"
+              cy="12"
+              r="3.5"
+              style={{
+                transform: `translate(${gaze.gazeX * 3}px, ${gaze.gazeY * 3}px)`,
+              }}
+            />
+            <circle
+              className="eye-pupil"
+              cx="41"
+              cy="12"
+              r="3.5"
+              style={{
+                transform: `translate(${gaze.gazeX * 3}px, ${gaze.gazeY * 3}px)`,
+              }}
+            />
+            <path
+              className="mouth"
+              d={gaze.near ? "M16 28 Q29 42 42 28" : "M20 31 Q29 29 38 31"}
+            />
+          </svg>
         </span>
       </motion.button>
 
-      <div className="mode-dots" aria-label={`Mode ${mode + 1} of 6`}>
-        {MODES.map(({ name }, index) => (
-          <span
-            className={`mode-dot${index === mode ? " is-current" : ""}`}
-            key={name}
-          />
-        ))}
+      <div className="orb-wordmark" aria-hidden="true">RIATA</div>
+      <div className="orb-caption" aria-label={`Current mode: ${MODES[mode].name}`}>
+        <CurrentModeIcon size={12} strokeWidth={1.8} />
+        <span>{MODES[mode].name}</span>
       </div>
 
       <AnimatePresence>
-        {labelVisible && (
+        {labelVisible && !focusAssist && (
           <motion.div
             className="mode-label"
             key={mode}
-            initial={{ opacity: 0, y: 5 }}
+            initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }}
             transition={
