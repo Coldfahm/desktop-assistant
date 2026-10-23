@@ -1,0 +1,87 @@
+:root {
+  font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
+  color: #263b3a;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f5f8f7;
+}
+
+.settings {
+  max-width: 620px;
+  margin: 0 auto;
+  padding: 48px 42px;
+}
+
+h1 {
+  margin: 0 0 14px;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+p {
+  max-width: 500px;
+  color: #536462;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.settings-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 28px;
+}
+
+.settings-form label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-form input {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid #cbd8d5;
+  border-radius: 8px;
+  background: #fff;
+  color: #263b3a;
+  font: inherit;
+}
+
+.settings-form input:focus-visible,
+.settings-form button:focus-visible {
+  outline: 2px solid #4d8e83;
+  outline-offset: 2px;
+}
+
+.settings-form .settings-hint,
+.settings-form .settings-error {
+  margin: 0;
+  font-size: 12px;
+}
+
+.settings-form .settings-error {
+  color: #a42f2f;
+}
+
+.settings-form button {
+  justify-self: start;
+  padding: 9px 16px;
+  border: 0;
+  border-radius: 7px;
+  background: #2e5b54;
+  color: #fff;
+  cursor: pointer;
+}
+
+.settings-form button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}

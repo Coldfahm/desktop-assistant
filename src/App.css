@@ -1,0 +1,247 @@
+:root {
+  font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
+  color: #e9f2f0;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  background: transparent;
+  font-weight: 400;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+button {
+  color: inherit;
+  font: inherit;
+}
+
+.widget {
+  position: relative;
+  width: 560px;
+  height: 560px;
+  overflow: hidden;
+  isolation: isolate;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.orbit {
+  position: absolute;
+  inset: 74px;
+  border: 1px solid rgba(188, 219, 214, 0.09);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.disk {
+  position: absolute;
+  z-index: 2;
+  left: 184px;
+  top: 184px;
+  display: grid;
+  width: 192px;
+  height: 192px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgba(185, 226, 220, 0.34);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 34%, rgba(54, 85, 84, 0.98), rgba(25, 42, 44, 0.97) 62%),
+    #1b2d2e;
+  box-shadow:
+    inset 0 1px 0 rgba(239, 255, 253, 0.13),
+    inset 0 -10px 24px rgba(5, 15, 17, 0.45),
+    0 18px 52px rgba(0, 0, 0, 0.24);
+  cursor: grab;
+  outline: none;
+}
+
+.disk:active {
+  cursor: grabbing;
+}
+
+.disk:focus-visible {
+  box-shadow:
+    0 0 0 3px rgba(136, 203, 193, 0.58),
+    0 18px 52px rgba(0, 0, 0, 0.24);
+}
+
+.disk-light {
+  position: absolute;
+  inset: 9px;
+  border: 1px solid rgba(175, 222, 214, 0.08);
+  border-radius: inherit;
+  transition: box-shadow 180ms ease, border-color 180ms ease;
+}
+
+.disk-light.is-awake {
+  border-color: rgba(178, 231, 220, 0.35);
+  box-shadow: 0 0 22px rgba(121, 201, 189, 0.17);
+}
+
+.character-wrap {
+  position: absolute;
+  top: 27px;
+  display: grid;
+  width: 118px;
+  height: 104px;
+  place-items: center;
+  transform: translateY(4px);
+  transition: transform 180ms ease;
+}
+
+.character-wrap.is-awake {
+  transform: translateY(0);
+}
+
+.character {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.cat-fur {
+  fill: #c7d8d3;
+  stroke: #e4f0ec;
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.cat-ear {
+  fill: #8dbdb5;
+}
+
+.cat-eye,
+.cat-face {
+  fill: #2a4140;
+  stroke: #2a4140;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.cat-whisker {
+  fill: none;
+  stroke: #819b96;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+.disk-caption {
+  position: absolute;
+  bottom: 21px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(225, 241, 237, 0.76);
+  font-size: 11px;
+  letter-spacing: 0.025em;
+}
+
+.ring-anchor {
+  position: absolute;
+  z-index: 3;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
+}
+
+.ring-item {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgba(189, 216, 211, 0.24);
+  border-radius: 50%;
+  background: rgba(28, 43, 45, 0.96);
+  color: rgba(218, 231, 227, 0.75);
+  cursor: pointer;
+  outline: none;
+  transition:
+    color 140ms ease,
+    border-color 140ms ease,
+    background 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.ring-item:focus-visible {
+  outline: 2px solid rgba(155, 220, 208, 0.72);
+  outline-offset: 3px;
+}
+
+.ring-item:hover,
+.ring-item:focus-visible,
+.ring-item.is-current {
+  border-color: rgba(155, 220, 208, 0.72);
+  background: #273e3e;
+  color: #bdede3;
+  box-shadow: 0 0 18px rgba(111, 195, 183, 0.15);
+}
+
+.mode-dots {
+  position: absolute;
+  left: 50%;
+  bottom: 65px;
+  display: flex;
+  gap: 7px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.mode-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(202, 220, 216, 0.32);
+  transition: background 120ms ease, transform 120ms ease;
+}
+
+.mode-dot.is-current {
+  background: #9fd5ca;
+  transform: scale(1.35);
+}
+
+.mode-label {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  color: rgba(220, 235, 231, 0.67);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.is-frozen *,
+.is-frozen *::before,
+.is-frozen *::after {
+  animation-play-state: paused !important;
+  transition: none !important;
+}
+
+.is-quiet .mode-label {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
