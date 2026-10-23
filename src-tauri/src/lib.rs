@@ -3,8 +3,9 @@ use std::{
     collections::HashMap,
     fs,
     path::PathBuf,
+    process::Command,
     str::FromStr,
-    sync::{Arc, Mutex, atomic::AtomicBool},
+    sync::{Arc, Mutex, OnceLock, atomic::AtomicBool},
     thread,
     time::{Duration, Instant},
 };
@@ -21,8 +22,15 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 #[cfg(windows)]
 use windows::Win32::{
     Foundation::POINT,
+    System::{
+        SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
+        Threading::GetSystemTimes,
+    },
     UI::{
-        Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON},
+        Input::KeyboardAndMouse::{
+            GetAsyncKeyState, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_LBUTTON, VK_MEDIA_NEXT_TRACK,
+            VK_MEDIA_PLAY_PAUSE, VK_MEDIA_PREV_TRACK,
+        },
         Shell::{
             QUNS_PRESENTATION_MODE, QUNS_QUIET_TIME, QUNS_RUNNING_D3D_FULL_SCREEN,
             SHQueryUserNotificationState,
@@ -80,9 +88,248 @@ struct DragState {
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PointerPosition {
-    gaze_x: f64,
-    gaze_y: f64,
-    near: bool,
+    mouse_x: f64,
+    mouse_y: f64,
+    widget_x: f64,
+    widget_y: f64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemTelemetry {
+    cpu_percent: u8,
+    memory_percent: u8,
+    memory_used_bytes: u64,
+    memory_total_bytes: u64,
+}
+
+#[cfg(windows)]
+static CPU_TIMES: OnceLock<Mutex<(u64, u64)>> = OnceLock::new();
+
+#[tauri::command]
+fn launch_app(app_id: String, settings: tauri::State<'_, SettingsStore>) -> Result<String, String> {
+    let custom_path = settings
+        .data
+        .lock()
+        .map_err(|_| "Runtime settings are unavailable".to_string())?
+        .app_paths
+        .get(&app_id)
+        .cloned();
+    if let Some(path) = custom_path {
+        if !path.is_empty() {
+            Command::new(&path)
+                .spawn()
+                .map_err(|error| format!("Could not start {path}: {error}"))?;
+            return Ok(format!("Started {}", app_display_name(&app_id)));
+        }
+    }
+
+    #[cfg(windows)]
+    let executable = match app_id.as_str() {
+        "notepad" => "notepad.exe",
+        "calculator" => "calc.exe",
+        "explorer" => "explorer.exe",
+        _ => {
+            return Err(format!(
+                "Set the executable path for {} in RIATA Settings first",
+                app_display_name(&app_id)
+            ));
+        }
+    };
+    #[cfg(not(windows))]
+    let executable = {
+        let _ = app_id;
+        return Err("RIATA's built-in app launcher currently supports Windows only".into());
+    };
+
+    Command::new(executable)
+        .spawn()
+        .map(|_| format!("Started {}", app_display_name(&app_id)))
+        .map_err(|error| format!("Could not start {executable}: {error}"))
+}
+
+fn app_display_name(app_id: &str) -> &str {
+    match app_id {
+        "notepad" => "Notepad",
+        "calculator" => "Calculator",
+        "explorer" => "File Explorer",
+        "autocad" => "AutoCAD",
+        "google_earth" => "Google Earth Pro",
+        "tiktok_live" => "TikTok LIVE Studio",
+        "fortnite" => "Fortnite",
+        _ => "app",
+    }
+}
+
+#[tauri::command]
+fn set_app_path(
+    app_id: String,
+    path: String,
+    settings: tauri::State<'_, SettingsStore>,
+) -> Result<(), String> {
+    if !["autocad", "google_earth", "tiktok_live", "fortnite"].contains(&app_id.as_str()) {
+        return Err("Unknown configurable app shortcut".into());
+    }
+    let normalized = if path.trim().is_empty() {
+        String::new()
+    } else {
+        let path = PathBuf::from(path.trim());
+        if !path.is_absolute() {
+            return Err("Choose an absolute path to the app executable".into());
+        }
+        let canonical = path
+            .canonicalize()
+            .map_err(|error| format!("Could not access the app path: {error}"))?;
+        if !canonical
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+            || !canonical.is_file()
+        {
+            return Err("The selected path must point to an .exe file".into());
+        }
+        canonical.to_string_lossy().into_owned()
+    };
+    let updated = {
+        let current = settings
+            .data
+            .lock()
+            .map_err(|_| "Runtime settings are unavailable".to_string())?;
+        let mut updated = current.clone();
+        if normalized.is_empty() {
+            updated.app_paths.remove(&app_id);
+        } else {
+            updated.app_paths.insert(app_id, normalized);
+        }
+        updated
+    };
+    write_settings(&settings.path, &updated)?;
+    *settings
+        .data
+        .lock()
+        .map_err(|_| "Runtime settings are unavailable".to_string())? = updated;
+    Ok(())
+}
+
+#[tauri::command]
+fn send_media_command(action: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let key = match action.as_str() {
+            "toggle" => VK_MEDIA_PLAY_PAUSE,
+            "next" => VK_MEDIA_NEXT_TRACK,
+            "previous" => VK_MEDIA_PREV_TRACK,
+            _ => return Err("Unknown media action".into()),
+        };
+        unsafe {
+            windows::Win32::UI::Input::KeyboardAndMouse::keybd_event(
+                key.0 as u8,
+                0,
+                KEYBD_EVENT_FLAGS(0),
+                0,
+            );
+            windows::Win32::UI::Input::KeyboardAndMouse::keybd_event(
+                key.0 as u8,
+                0,
+                KEYEVENTF_KEYUP,
+                0,
+            );
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = action;
+        Err("Media keys are supported on Windows only".into())
+    }
+}
+
+#[tauri::command]
+fn get_system_telemetry() -> Result<SystemTelemetry, String> {
+    #[cfg(windows)]
+    {
+        let mut memory = MEMORYSTATUSEX {
+            dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+            ..Default::default()
+        };
+        unsafe { GlobalMemoryStatusEx(&mut memory) }
+            .map_err(|error| format!("Could not read system memory: {error}"))?;
+
+        let mut idle = windows::Win32::Foundation::FILETIME::default();
+        let mut kernel = windows::Win32::Foundation::FILETIME::default();
+        let mut user = windows::Win32::Foundation::FILETIME::default();
+        unsafe { GetSystemTimes(Some(&mut idle), Some(&mut kernel), Some(&mut user)) }
+            .map_err(|error| format!("Could not read processor times: {error}"))?;
+        let to_u64 = |value: windows::Win32::Foundation::FILETIME| {
+            ((value.dwHighDateTime as u64) << 32) | value.dwLowDateTime as u64
+        };
+        let idle = to_u64(idle);
+        let total = to_u64(kernel).saturating_add(to_u64(user));
+        let times = CPU_TIMES.get_or_init(|| Mutex::new((idle, total)));
+        let cpu_percent = {
+            let mut previous = times
+                .lock()
+                .map_err(|_| "Processor telemetry state is unavailable".to_string())?;
+            let idle_delta = idle.saturating_sub(previous.0);
+            let total_delta = total.saturating_sub(previous.1);
+            *previous = (idle, total);
+            if total_delta == 0 {
+                0
+            } else {
+                (100_u64.saturating_sub(idle_delta.saturating_mul(100) / total_delta)).min(100)
+                    as u8
+            }
+        };
+        Ok(SystemTelemetry {
+            cpu_percent,
+            memory_percent: memory.dwMemoryLoad.min(100) as u8,
+            memory_used_bytes: memory.ullTotalPhys.saturating_sub(memory.ullAvailPhys),
+            memory_total_bytes: memory.ullTotalPhys,
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        Err("System telemetry is supported on Windows only".into())
+    }
+}
+
+#[tauri::command]
+fn run_safe_command(command: String) -> Result<String, String> {
+    let (program, args): (&str, &[&str]) = match command.as_str() {
+        "identity" => ("whoami.exe", &[]),
+        "network" => ("ipconfig.exe", &[]),
+        _ => return Err("Available commands: identity, network".into()),
+    };
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|error| format!("Could not run {command}: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("{command} exited with {}", output.status));
+    }
+    String::from_utf8(output.stdout)
+        .map(|text| text.trim().to_string())
+        .map_err(|error| format!("{command} returned invalid text: {error}"))
+}
+
+#[tauri::command]
+fn inspect_dropped_file(path: String) -> Result<String, String> {
+    let metadata =
+        fs::metadata(&path).map_err(|error| format!("Could not inspect dropped file: {error}"))?;
+    if !metadata.is_file() {
+        return Err("Drop a file, not a folder".into());
+    }
+    let name = PathBuf::from(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "The dropped file name is not valid UTF-8".to_string())?
+        .to_string();
+    Ok(format!("{name} · {} bytes", metadata.len()))
+}
+
+#[tauri::command]
+fn show_settings(app: AppHandle) -> Result<(), String> {
+    open_settings(&app)
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -112,6 +359,7 @@ struct RuntimeSettings {
     do_not_disturb: bool,
     current_mode: usize,
     widget_size: u32,
+    app_paths: HashMap<String, String>,
 }
 
 impl Default for RuntimeSettings {
@@ -122,6 +370,7 @@ impl Default for RuntimeSettings {
             do_not_disturb: false,
             current_mode: 0,
             widget_size: 320,
+            app_paths: HashMap::new(),
         }
     }
 }
@@ -294,8 +543,8 @@ fn set_pause_animations(
 
 #[tauri::command]
 fn save_current_mode(mode: usize, settings: tauri::State<'_, SettingsStore>) -> Result<(), String> {
-    if mode >= 6 {
-        return Err("Mode index must be between 0 and 5".into());
+    if mode >= 7 {
+        return Err("Mode index must be between 0 and 6".into());
     }
     let updated = {
         let current = settings
@@ -317,7 +566,7 @@ fn save_current_mode(mode: usize, settings: tauri::State<'_, SettingsStore>) -> 
 #[tauri::command]
 fn set_widget_size(
     size: u32,
-    window: WebviewWindow,
+    app: AppHandle,
     settings: tauri::State<'_, SettingsStore>,
 ) -> Result<(), String> {
     if ![280, 320, 360, 400].contains(&size) {
@@ -332,48 +581,17 @@ fn set_widget_size(
         return Ok(());
     }
 
-    let previous_position = window
-        .outer_position()
-        .map_err(|error| format!("Could not read the RIATA widget position: {error}"))?;
-    window
-        .set_size(tauri::LogicalSize::new(size as f64, size as f64))
-        .map_err(|error| format!("Could not resize the RIATA widget: {error}"))?;
-    if let Err(error) = clamp_window_to_monitor(&window) {
-        return match restore_widget_geometry(&window, previous.widget_size, previous_position) {
-            Ok(()) => Err(error),
-            Err(rollback_error) => Err(format!("{error}; {rollback_error}")),
-        };
-    }
-
     let mut updated = previous.clone();
     updated.widget_size = size;
     if let Err(error) = write_settings(&settings.path, &updated) {
-        let rollback = restore_widget_geometry(&window, previous.widget_size, previous_position);
-        return match rollback {
-            Ok(()) => Err(format!("Could not save widget size: {error}")),
-            Err(rollback_error) => Err(format!(
-                "Could not save widget size: {error}; {rollback_error}"
-            )),
-        };
+        return Err(format!("Could not save widget size: {error}"));
     }
     *settings
         .data
         .lock()
         .map_err(|_| "Runtime settings are unavailable".to_string())? = updated;
-    Ok(())
-}
-
-fn restore_widget_geometry(
-    window: &WebviewWindow,
-    size: u32,
-    position: PhysicalPosition<i32>,
-) -> Result<(), String> {
-    window
-        .set_size(tauri::LogicalSize::new(size as f64, size as f64))
-        .map_err(|error| format!("Could not restore the previous widget size: {error}"))?;
-    window
-        .set_position(position)
-        .map_err(|error| format!("Could not restore the previous widget position: {error}"))
+    app.emit("widget-size", size)
+        .map_err(|error| format!("Could not publish widget size: {error}"))
 }
 
 fn write_settings(path: &PathBuf, settings: &RuntimeSettings) -> Result<(), String> {
@@ -749,19 +967,7 @@ fn start_native_loops(
                         eprintln!("Disk: could not publish pointer target state: {error}");
                     }
                 }
-                if last_pointer_near {
-                    last_pointer_near = false;
-                    if let Err(error) = window.emit(
-                        "pointer-position",
-                        PointerPosition {
-                            gaze_x: 0.0,
-                            gaze_y: 0.0,
-                            near: false,
-                        },
-                    ) {
-                        eprintln!("Disk: could not reset pointer gaze: {error}");
-                    }
-                }
+                last_pointer_near = false;
                 thread::sleep(Duration::from_millis(200));
                 continue;
             }
@@ -807,37 +1013,33 @@ fn start_native_loops(
             let logical_y = dy as f64 / scale;
             let logical_width = size.width as f64 / scale;
             let logical_height = size.height as f64 / scale;
-            let widget_scale = logical_width / 320.0;
-            let gaze_x = ((logical_x / widget_scale - 160.0) / 48.0).clamp(-1.0, 1.0);
-            let gaze_y = ((logical_y / widget_scale - 160.0) / 48.0).clamp(-1.0, 1.0);
-            let distance_from_center = ((logical_x - logical_width / 2.0).powi(2)
-                + (logical_y - logical_height / 2.0).powi(2))
-            .sqrt();
-            let tracking_pointer = distance_from_center <= 150.0 * widget_scale;
-            let pointer_near = distance_from_center <= 116.0 * widget_scale;
+            let distance_from_center = ((dx as f64).powi(2) + (dy as f64).powi(2)).sqrt();
+            let tracking_pointer = distance_from_center <= 220.0 * scale;
             if tracking_pointer {
                 last_pointer_near = true;
                 if let Err(error) = window.emit(
-                    "pointer-position",
+                    "mouse-moved",
                     PointerPosition {
-                        gaze_x,
-                        gaze_y,
-                        near: pointer_near,
+                        mouse_x: cursor.x as f64,
+                        mouse_y: cursor.y as f64,
+                        widget_x: (position.x as f64 + logical_width * scale / 2.0),
+                        widget_y: (position.y as f64 + logical_height * scale / 2.0),
                     },
                 ) {
-                    eprintln!("Disk: could not publish pointer gaze: {error}");
+                    eprintln!("RIATA: could not publish pointer position: {error}");
                 }
             } else if last_pointer_near {
                 last_pointer_near = false;
                 if let Err(error) = window.emit(
-                    "pointer-position",
+                    "mouse-moved",
                     PointerPosition {
-                        gaze_x: 0.0,
-                        gaze_y: 0.0,
-                        near: false,
+                        mouse_x: cursor.x as f64,
+                        mouse_y: cursor.y as f64,
+                        widget_x: (position.x as f64 + logical_width * scale / 2.0),
+                        widget_y: (position.y as f64 + logical_height * scale / 2.0),
                     },
                 ) {
-                    eprintln!("Disk: could not reset pointer gaze: {error}");
+                    eprintln!("RIATA: could not reset pointer gaze: {error}");
                 }
             }
             let hit = match regions.0.lock() {
@@ -926,7 +1128,7 @@ fn open_settings(app: &AppHandle) -> Result<(), String> {
 
     WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
         .title("RIATA Settings")
-        .inner_size(660.0, 480.0)
+        .inner_size(720.0, 760.0)
         .resizable(true)
         .build()
         .map(|_| ())
@@ -1186,16 +1388,7 @@ pub fn run() {
             let window = app.get_webview_window("main").ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "Missing main window")
             })?;
-            let widget_size = app
-                .state::<SettingsStore>()
-                .data
-                .lock()
-                .map_err(|_| "Runtime settings are unavailable")?
-                .widget_size;
-            window.set_size(tauri::LogicalSize::new(
-                widget_size as f64,
-                widget_size as f64,
-            ))?;
+            window.set_size(tauri::LogicalSize::new(440.0, 320.0))?;
             if let Err(error) = restore_position(&window, app.state::<PositionStore>().inner()) {
                 eprintln!("Disk: {error}");
             }
@@ -1243,7 +1436,14 @@ pub fn run() {
             set_global_hotkey,
             set_pause_animations,
             save_current_mode,
-            set_widget_size
+            set_widget_size,
+            launch_app,
+            set_app_path,
+            send_media_command,
+            get_system_telemetry,
+            run_safe_command,
+            inspect_dropped_file,
+            show_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running Disk");

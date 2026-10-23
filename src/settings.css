@@ -83,6 +83,33 @@ body {
   gap: 12px;
 }
 
+.app-path-row {
+  display: grid;
+  grid-template-columns: 145px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+}
+
+.app-path-row input {
+  min-width: 0;
+  padding: 8px 9px;
+  font-size: 12px;
+}
+
+.app-path-row button {
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 7px;
+  background: #2e5b54;
+  color: #fff;
+  cursor: pointer;
+}
+
+.app-path-row button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .settings-form .settings-error,
 .settings-error {
   color: #a42f2f;
